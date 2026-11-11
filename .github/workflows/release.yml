@@ -49,37 +49,22 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Check npm token
-        id: npm-token
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN is not set; skipping npm publish."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
       - name: Download release assets
-        if: steps.npm-token.outputs.publish == 'true'
         run: gh release download "$RELEASE_TAG" --repo The-DevOps-Daily/devops-daily-cli --dir release-dist
       - name: Verify checksums
-        if: steps.npm-token.outputs.publish == 'true'
         run: (cd release-dist && sha256sum -c checksums.txt)
       - name: Assemble npm packages
-        if: steps.npm-token.outputs.publish == 'true'
         run: node npm/scripts/assemble.mjs --version "${RELEASE_TAG#v}" --dist release-dist --out npm/dist
       - name: Publish platform packages
-        if: steps.npm-token.outputs.publish == 'true'
         run: |
           for package in npm/dist/@devopsdaily/devops-daily-cli-*; do
             (cd "$package" && npm publish --provenance --access public)
           done
       - name: Publish main package
-        if: steps.npm-token.outputs.publish == 'true'
         run: (cd npm/dist/@devopsdaily/devops-daily-cli && npm publish --provenance --access public)
