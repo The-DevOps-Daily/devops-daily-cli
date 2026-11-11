@@ -4,3 +4,6 @@
 *.pem
 host_ed25519*
 feed.json
+/dist/
+/npm/dist/
+/completions/

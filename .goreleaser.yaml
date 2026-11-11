@@ -1,0 +1,86 @@
+version: 2
+
+project_name: devops-daily
+
+before:
+  hooks:
+    - sh scripts/completions.sh
+
+builds:
+  - main: ./cmd/devops-daily
+    binary: devops-daily
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "devops-daily_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - completions/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+homebrew_casks:
+  - name: devops-daily
+    binaries:
+      - devops-daily
+    # The short alias. Never "dd", which is the Unix tool.
+    custom_block: |
+      binary "devops-daily", target: "ddy"
+    completions:
+      bash: completions/devops-daily.bash
+      zsh: completions/_devops-daily
+      fish: completions/devops-daily.fish
+    repository:
+      owner: The-DevOps-Daily
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://devops-daily.com
+    description: "Learn DevOps from your terminal: posts, quizzes, flashcards and checklists from DevOps Daily"
+    license: MIT
+    skip_upload: auto
+    commit_author:
+      name: bobbyonmagic
+      email: 237182227+bobbyonmagic@users.noreply.github.com
+    # The binaries are not notarized, so clear the quarantine flag on macOS.
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/devops-daily"]
+          end
+
+release:
+  github:
+    owner: The-DevOps-Daily
+    name: devops-daily-cli
+  draft: false
+
+changelog:
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

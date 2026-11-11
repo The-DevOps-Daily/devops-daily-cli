@@ -1,0 +1,28 @@
+{
+  "name": "@devopsdaily/devops-daily-cli",
+  "version": "0.0.0",
+  "description": "Learn DevOps from your terminal",
+  "bin": {
+    "devops-daily": "bin/devops-daily.js",
+    "ddy": "bin/devops-daily.js"
+  },
+  "optionalDependencies": {
+    "@devopsdaily/devops-daily-cli-darwin-arm64": "0.0.0",
+    "@devopsdaily/devops-daily-cli-darwin-x64": "0.0.0",
+    "@devopsdaily/devops-daily-cli-linux-arm64": "0.0.0",
+    "@devopsdaily/devops-daily-cli-linux-x64": "0.0.0",
+    "@devopsdaily/devops-daily-cli-win32-arm64": "0.0.0",
+    "@devopsdaily/devops-daily-cli-win32-x64": "0.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-DevOps-Daily/devops-daily-cli.git"
+  },
+  "homepage": "https://devops-daily.com",
+  "license": "MIT",
+  "keywords": ["devops", "learning", "cli", "quiz", "flashcards"],
+  "files": ["bin/", "README.md"]
+}
