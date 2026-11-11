@@ -14,6 +14,7 @@ import (
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/content"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/feed"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/sponsor"
+	"github.com/The-DevOps-Daily/devops-daily-cli/internal/text"
 )
 
 const (
@@ -690,7 +691,7 @@ func (m Model) postBody(tw int) []string {
 			lines = append(lines, "")
 		} else {
 			lines = append(lines, styleLines(wrap(p.Summary, tw), m.st.text)...)
-			lines = append(lines, m.st.muted.Render("Could not render article: "+m.article.err.Error()), "")
+			lines = append(lines, m.st.muted.Render("Could not render article: "+text.Line(m.article.err.Error(), 200)), "")
 		}
 	} else if p.Summary != "" {
 		lines = append(lines, styleLines(wrap(p.Summary, tw), m.st.text)...)

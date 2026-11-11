@@ -174,7 +174,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("feed returned %s", resp.Status)
+		return fmt.Errorf("feed returned HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, c.opt.MaxBytes+1))
 	if err != nil {

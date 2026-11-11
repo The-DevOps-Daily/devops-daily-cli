@@ -70,12 +70,12 @@ func testDataFiles(t *testing.T) map[string][]byte {
 	postBodies := []string{
 		"# Pod OOMKilled\n\nA container exceeded its memory limit. [Learn more](https://devops-daily.com/kubernetes).",
 		"# Terraform state lock\n\nA stale lock blocks your apply. [Learn more](https://devops-daily.com/terraform).",
-		"# Docker layers\n\nLayers make builds repeatable. [Learn more](https://devops-daily.com/docker).",
+		"# Docker layers\n\nLayers make \x1b[2Jbuilds repeatable. [Learn more](https://devops-daily.com/docker).",
 	}
 	posts := []map[string]any{
 		{"slug": "pod-oomkilled", "title": "Why a pod was OOMKilled", "excerpt": "Inspect memory limits.", "date": "2026-11-10", "category": "Kubernetes", "tags": []string{"kubernetes", "memory"}, "readingTime": "4 min read", "url": "https://devops-daily.com/posts/pod-oomkilled", "body": "posts/0.json"},
 		{"slug": "terraform-state-lock", "title": "Recover a Terraform state lock", "excerpt": "Unlock carefully.", "date": "2026-11-09", "category": "Terraform", "tags": []string{"terraform", "state"}, "readingTime": "5 min read", "url": "https://devops-daily.com/posts/terraform-state-lock", "body": "posts/1.json"},
-		{"slug": "docker-layers", "title": "Understand Docker layers", "excerpt": "Build smaller images.", "date": "2026-11-08", "category": "Docker", "tags": []string{"docker", "images"}, "readingTime": "3 min read", "url": "https://devops-daily.com/posts/docker-layers", "body": "posts/2.json"},
+		{"slug": "docker-layers", "title": "Understand \x1b[31mDocker\x1b[0m layers\x1b]2;owned\x07", "excerpt": "Build smaller images.", "date": "2026-11-08", "category": "Docker", "tags": []string{"docker", "images"}, "readingTime": "3 min read", "url": "https://devops-daily.com/posts/docker-layers", "body": "posts/2.json"},
 	}
 	files := map[string][]byte{
 		"posts.json":      marshalTestJSON(t, map[string]any{"schema": 1, "posts": posts}),

@@ -80,7 +80,7 @@ func (a *App) checkUpdate(parent context.Context, current string) {
 		return
 	}
 	if response.StatusCode != http.StatusOK {
-		a.updateError(fmt.Errorf("GitHub returned %s", response.Status))
+		a.updateError(fmt.Errorf("GitHub returned HTTP %d", response.StatusCode))
 		return
 	}
 	var release struct {
@@ -90,10 +90,11 @@ func (a *App) checkUpdate(parent context.Context, current string) {
 		a.updateError(err)
 		return
 	}
-	if strings.TrimPrefix(release.TagName, "v") == strings.TrimPrefix(current, "v") {
+	tag := text.Line(release.TagName, 40)
+	if strings.TrimPrefix(tag, "v") == strings.TrimPrefix(current, "v") {
 		fmt.Fprintln(a.Stdout, "You have the latest version.")
 	} else {
-		fmt.Fprintf(a.Stdout, "Version %s is out (you have %s).\n", release.TagName, current)
+		fmt.Fprintf(a.Stdout, "Version %s is out (you have %s).\n", tag, current)
 	}
 }
 func (a *App) updateError(err error) {

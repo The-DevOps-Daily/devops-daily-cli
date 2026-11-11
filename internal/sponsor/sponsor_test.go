@@ -13,7 +13,7 @@ func TestParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Sponsor{Name: "Example-Co", Text: "Fast [1mthings", URL: "https://example.com/x"}
+	want := Sponsor{Name: "Example-Co", Text: "Fast things", URL: "https://example.com/x"}
 	if s != want {
 		t.Fatalf("got %+v, want %+v", s, want)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/paths"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/progress"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/sponsor"
+	"github.com/The-DevOps-Daily/devops-daily-cli/internal/text"
 )
 
 func (a *App) progressStore() (*progress.Store, error) {
@@ -17,7 +18,7 @@ func (a *App) progressStore() (*progress.Store, error) {
 		return nil, err
 	}
 	if warning := store.Warning(); warning != "" {
-		fmt.Fprintln(a.Stderr, a.muted(warning))
+		fmt.Fprintln(a.Stderr, a.muted(text.Clean(warning, false)))
 	}
 	return store, nil
 }

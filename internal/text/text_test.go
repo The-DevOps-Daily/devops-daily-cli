@@ -5,9 +5,27 @@ import "testing"
 func TestCleanDropsControlCodes(t *testing.T) {
 	in := "safe\x1b[2J\x1b]0;title\x07 text\x9b31m\u202edone\u2014ok"
 	got := Clean(in, false)
-	want := "safe[2J]0;title text31mdone-ok"
+	want := "safe textdone-ok"
 	if got != want {
 		t.Fatalf("Clean = %q, want %q", got, want)
+	}
+}
+
+func TestCleanStripsWholeEscapeSequences(t *testing.T) {
+	cases := map[string]string{
+		"a\x1b[1;31mred\x1b[0m b":                                "ared b",
+		"x\x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\y": "xlinky",
+		"title\x1b]2;owned\x07!":                                 "title!",
+		"q\x1bPdcs data\x1b\\r":                                  "qr",
+		"\x1b":                                                   "",
+		"\x1b[":                                                  "",
+		"keep\x1b[12\nnext":                                      "keep next",
+		"c1\u009b2Jcsi":                                          "c1csi",
+	}
+	for in, want := range cases {
+		if got := Clean(in, false); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

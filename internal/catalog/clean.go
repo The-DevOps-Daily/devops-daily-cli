@@ -50,6 +50,14 @@ func cleanQuizzes(values []Quiz) {
 				x.Options[k] = text.Clean(x.Options[k], true)
 			}
 		}
+		// A question whose answer is not one of its options cannot be played.
+		kept := q.Questions[:0]
+		for _, x := range q.Questions {
+			if x.Correct >= 0 && x.Correct < len(x.Options) {
+				kept = append(kept, x)
+			}
+		}
+		q.Questions = kept
 	}
 }
 func cleanDecks(values []Deck) {
@@ -100,6 +108,7 @@ func cleanIncidents(values []Incident) {
 		x.Title = text.Line(x.Title, 300)
 		x.Topic = text.Line(x.Topic, 100)
 		x.Difficulty = text.Line(x.Difficulty, 60)
+		x.Correct = text.Line(x.Correct, 10)
 		x.Scenario = text.Clean(x.Scenario, true)
 		x.Fix = text.Clean(x.Fix, true)
 		x.Lesson = text.Clean(x.Lesson, true)

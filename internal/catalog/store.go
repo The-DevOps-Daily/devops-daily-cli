@@ -187,7 +187,7 @@ func (s *Store) Sync(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, writeJSON(filepath.Join(s.Dir, "meta.json"), meta)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return SyncResult{}, fmt.Errorf("download index.json: %s", resp.Status)
+		return SyncResult{}, fmt.Errorf("download index.json: HTTP %d", resp.StatusCode)
 	}
 	index, err := readLimited(resp.Body, maxFileBytes)
 	if err != nil {
@@ -223,7 +223,7 @@ func (s *Store) Sync(ctx context.Context) (SyncResult, error) {
 			return SyncResult{}, fmt.Errorf("download %s: %w", name, readErr)
 		}
 		if fileResp.StatusCode != http.StatusOK {
-			return SyncResult{}, fmt.Errorf("download %s: %s", name, fileResp.Status)
+			return SyncResult{}, fmt.Errorf("download %s: HTTP %d", name, fileResp.StatusCode)
 		}
 		if hash(b) != strings.ToLower(info.SHA256) {
 			return SyncResult{}, fmt.Errorf("file %s failed its SHA-256 check", name)

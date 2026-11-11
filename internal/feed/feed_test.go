@@ -40,7 +40,7 @@ func TestParseSortsCleansAndLimits(t *testing.T) {
 	if len(posts) != 2 {
 		t.Fatalf("got %d posts, want 2", len(posts))
 	}
-	if posts[0].Title != "Newest 31mred" {
+	if posts[0].Title != "Newest red" {
 		t.Fatalf("escape codes not removed: %q", posts[0].Title)
 	}
 	if posts[0].Summary != "Has HTML & entities" {

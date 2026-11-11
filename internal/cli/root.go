@@ -20,6 +20,7 @@ import (
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/catalog"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/pager"
 	"github.com/The-DevOps-Daily/devops-daily-cli/internal/paths"
+	"github.com/The-DevOps-Daily/devops-daily-cli/internal/text"
 )
 
 type BuildInfo struct {
@@ -56,12 +57,12 @@ func Main(args []string, info BuildInfo) int {
 	command := app.Command()
 	command.SetArgs(args)
 	if _, _, err := command.Find(args); err != nil {
-		fmt.Fprintf(app.Stderr, "devops-daily: %s\n", err)
+		printError(app.Stderr, err)
 		fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
 		return 2
 	}
 	if err := command.Execute(); err != nil {
-		fmt.Fprintf(app.Stderr, "devops-daily: %s\n", err)
+		printError(app.Stderr, err)
 		var use usageError
 		if errors.As(err, &use) {
 			fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
@@ -70,6 +71,12 @@ func Main(args []string, info BuildInfo) int {
 		return 1
 	}
 	return 0
+}
+
+// printError writes an error for the terminal. Errors can carry text from
+// the network (URLs, server replies), so control codes are stripped first.
+func printError(w io.Writer, err error) {
+	fmt.Fprintf(w, "devops-daily: %s\n", text.Clean(err.Error(), true))
 }
 
 func DefaultApp(info BuildInfo) *App {
@@ -178,7 +185,7 @@ func (a *App) Command() *cobra.Command {
 func (a *App) ensure(ctx context.Context) error {
 	notice, err := a.Store.Ensure(ctx, a.Offline)
 	if notice != "" {
-		fmt.Fprintln(a.Stderr, a.muted(notice))
+		fmt.Fprintln(a.Stderr, a.muted(text.Clean(notice, false)))
 	}
 	return err
 }

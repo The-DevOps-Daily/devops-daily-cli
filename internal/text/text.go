@@ -7,9 +7,10 @@ import (
 	"unicode/utf8"
 )
 
-// Clean removes characters that a terminal could interpret: C0 and C1
-// control codes (so no escape sequences survive), DEL, invalid UTF-8 and
-// bidirectional overrides. Tabs become spaces. Em and en dashes become
+// Clean removes characters that a terminal could interpret: whole escape
+// sequences (CSI, OSC, DCS and the like, so no "[31m" is left behind), any
+// other C0 and C1 control code, DEL, invalid UTF-8 and bidirectional
+// overrides. Tabs become spaces. Em and en dashes become
 // hyphens. Newlines are kept only when keepNewlines is true; otherwise they
 // become spaces.
 func Clean(s string, keepNewlines bool) string {
@@ -21,7 +22,14 @@ func Clean(s string, keepNewlines bool) string {
 		i += size
 		switch {
 		case r == utf8.RuneError && size <= 1:
-			// invalid byte: drop it
+			// invalid byte: drop it, and the rest of a raw 8-bit CSI
+			if s[i-1] == 0x9b {
+				i = skipCSI(s, i)
+			}
+		case r == 0x1b:
+			i = skipEscape(s, i)
+		case r == 0x9b:
+			i = skipCSI(s, i)
 		case r == '\n' || r == '\r':
 			if keepNewlines && r == '\n' {
 				b.WriteByte('\n')
@@ -41,6 +49,46 @@ func Clean(s string, keepNewlines bool) string {
 		}
 	}
 	return b.String()
+}
+
+// skipEscape returns the index just past the escape sequence whose ESC ends
+// at s[i]. Unterminated sequences run to the end of s.
+func skipEscape(s string, i int) int {
+	if i >= len(s) {
+		return i
+	}
+	switch s[i] {
+	case '[':
+		return skipCSI(s, i+1)
+	case ']', 'P', 'X', '^', '_':
+		for j := i + 1; j < len(s); j++ {
+			if s[j] == 0x07 {
+				return j + 1
+			}
+			if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return len(s)
+	default:
+		_, size := utf8.DecodeRuneInString(s[i:])
+		return i + size
+	}
+}
+
+// skipCSI skips CSI parameter and intermediate bytes and the final byte. A
+// byte that cannot be part of the sequence ends it without being consumed.
+func skipCSI(s string, i int) int {
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x40 && c <= 0x7e {
+			return i + 1
+		}
+		if c < 0x20 || c > 0x3f {
+			return i
+		}
+	}
+	return i
 }
 
 // Line cleans s, folds all whitespace into single spaces and shortens the
