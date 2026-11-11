@@ -39,6 +39,10 @@ type Deps struct {
 	IdleTimeout time.Duration // quit after this long without a key press
 	MaxSession  time.Duration // quit after this long in total
 	OnQuit      func(reason string)
+	Header      string
+	Article     func(p feed.Post, width int) ([]string, error)
+	OpenURL     func(url string) error
+	Start       string
 }
 
 type screen int
@@ -93,6 +97,15 @@ type Model struct {
 	started  time.Time
 	lastKey  time.Time
 	quitting bool
+	article  *articleCache
+	openNote string
+}
+
+type articleCache struct {
+	url   string
+	width int
+	lines []string
+	err   error
 }
 
 // New returns the app for one session.
@@ -101,13 +114,21 @@ func New(r *lipgloss.Renderer, d Deps) Model {
 		d.Now = time.Now
 	}
 	now := d.Now()
-	m := Model{d: d, st: newStyles(r), width: 80, height: 24, started: now, lastKey: now, quizPick: -1, day: now}
+	m := Model{d: d, st: newStyles(r), width: 80, height: 24, started: now, lastKey: now, quizPick: -1, day: now, article: &articleCache{}}
 	if d.Sponsor != nil {
 		m.sponsor = d.Sponsor()
 	}
 	if d.Content != nil {
 		m.quiz = d.Content.QuestionFor(now)
 		m.incident = d.Content.IncidentFor(now)
+	}
+	switch d.Start {
+	case "incident":
+		m = m.open(screenIncident)
+	case "quiz":
+		m = m.open(screenQuiz)
+	case "posts":
+		m = m.open(screenPosts)
 	}
 	return m
 }
@@ -183,6 +204,19 @@ func (m Model) handleKey(key string) (tea.Model, tea.Cmd) {
 		return m.quit("")
 	}
 	if m.tooSmall() {
+		return m, nil
+	}
+	if key != "o" {
+		m.openNote = ""
+	}
+	if key == "o" && m.d.OpenURL != nil {
+		if url := m.openURL(); url != "" {
+			if err := m.d.OpenURL(url); err != nil {
+				m.openNote = "Could not open a browser. The link: " + url
+			} else {
+				m.openNote = "Opened in your browser."
+			}
+		}
 		return m, nil
 	}
 	switch m.screen {
@@ -287,6 +321,7 @@ func answerIndex(key string, n int) int {
 
 func (m Model) open(s screen) Model {
 	m.screen, m.scroll = s, 0
+	m.openNote = ""
 	if m.d.Sponsor != nil {
 		m.sponsor = m.d.Sponsor()
 	}
@@ -306,6 +341,9 @@ func (m Model) open(s screen) Model {
 			m.quiz, m.quizPick, m.quizShown = m.d.Content.QuestionFor(now), -1, false
 			m.incident, m.incidentShown = m.d.Content.IncidentFor(now), false
 		}
+	}
+	if s == screenPost {
+		m.article = &articleCache{}
 	}
 	return m
 }
@@ -443,7 +481,11 @@ func (m Model) View() string {
 
 func (m Model) header(tw int) []string {
 	left := m.st.accent.Render(">_ ") + m.st.bold.Render("DevOps Daily")
-	right := m.st.muted.Render("ssh.devops-daily.com")
+	header := m.d.Header
+	if header == "" {
+		header = "ssh.devops-daily.com"
+	}
+	right := m.st.muted.Render(header)
 	gap := tw - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 2 {
 		right, gap = "", 1
@@ -501,6 +543,9 @@ func (m Model) helpLine(tw int, more bool) string {
 		}
 	default:
 		items = [][2]string{{"↑/↓", "scroll"}, {"esc", "back"}, {"q", "quit"}}
+	}
+	if m.d.OpenURL != nil && m.openURL() != "" {
+		items = append(items[:len(items)-1], append([][2]string{{"o", "open"}}, items[len(items)-1])...)
 	}
 	render := func(items [][2]string) string {
 		parts := make([]string, len(items))
@@ -632,12 +677,28 @@ func (m Model) postBody(tw int) []string {
 		meta = p.Date.Format("Monday 2 January 2006") + "  ·  " + meta
 	}
 	lines = append(lines, m.st.muted.Render(meta), "")
-	if p.Summary != "" {
+	if m.d.Article != nil {
+		if m.article == nil || m.article.url != p.URL || m.article.width != tw {
+			lines, err := m.d.Article(p, tw)
+			if m.article == nil {
+				m.article = &articleCache{}
+			}
+			*m.article = articleCache{url: p.URL, width: tw, lines: lines, err: err}
+		}
+		if m.article.err == nil {
+			lines = append(lines, m.article.lines...)
+			lines = append(lines, "")
+		} else {
+			lines = append(lines, styleLines(wrap(p.Summary, tw), m.st.text)...)
+			lines = append(lines, m.st.muted.Render("Could not render article: "+m.article.err.Error()), "")
+		}
+	} else if p.Summary != "" {
 		lines = append(lines, styleLines(wrap(p.Summary, tw), m.st.text)...)
 		lines = append(lines, "")
 	}
 	lines = append(lines, m.st.text.Render("Read it on the site:"))
-	return append(lines, styleLines(hardWrap(p.URL, tw), m.st.accent)...)
+	lines = append(lines, styleLines(hardWrap(p.URL, tw), m.st.accent)...)
+	return m.withOpenNote(lines, tw)
 }
 
 func (m Model) dateLabel() string { return m.day.UTC().Format("Mon 2 Jan 2006") + " (UTC)" }
@@ -687,7 +748,7 @@ func (m Model) quizBody(tw int) ([]string, int) {
 	anchor := len(lines)
 	if !m.quizShown {
 		lines = append(lines, styleLines(wrap("Press a, b, c or d to answer, or s to see the answer.", tw), m.st.muted)...)
-		return lines, anchor
+		return m.withOpenNote(lines, tw), anchor
 	}
 	answer := "The answer is " + string(rune('a'+q.Correct)) + ")."
 	switch {
@@ -704,7 +765,7 @@ func (m Model) quizBody(tw int) ([]string, int) {
 	}
 	lines = append(lines, "", m.st.text.Render("Take the full quiz:"))
 	lines = append(lines, styleLines(hardWrap(q.URL(), tw), m.st.accent)...)
-	return lines, anchor
+	return m.withOpenNote(lines, tw), anchor
 }
 
 func (m Model) incidentBody(tw int) ([]string, int) {
@@ -757,7 +818,7 @@ func (m Model) incidentBody(tw int) ([]string, int) {
 	lines = append(lines, "")
 	lines = append(lines, styleLines(wrap("Go deeper: "+in.LinkTitle, tw), m.st.text)...)
 	lines = append(lines, styleLines(hardWrap(in.LinkURL, tw), m.st.accent)...)
-	return lines, anchor
+	return m.withOpenNote(lines, tw), anchor
 }
 
 func (m Model) newsletterBody(tw int) []string {
@@ -769,7 +830,33 @@ func (m Model) newsletterBody(tw int) []string {
 	lines = append(lines, styleLines(wrap("This app never asks for your email. Sign-up happens on the site only.", tw), m.st.muted)...)
 	lines = append(lines, "")
 	lines = append(lines, styleLines(wrap("Prefer a feed reader? "+siteURL+"/feed.xml", tw), m.st.muted)...)
-	return lines
+	return m.withOpenNote(lines, tw)
+}
+
+func (m Model) withOpenNote(lines []string, tw int) []string {
+	if m.openNote == "" {
+		return lines
+	}
+	lines = append(lines, "")
+	return append(lines, styleLines(wrap(m.openNote, tw), m.st.muted)...)
+}
+
+func (m Model) openURL() string {
+	switch m.screen {
+	case screenPost:
+		if len(m.posts) > 0 {
+			return m.posts[m.postIdx].URL
+		}
+	case screenQuiz:
+		return m.quiz.URL()
+	case screenIncident:
+		if m.incidentShown {
+			return m.incident.LinkURL
+		}
+	case screenNewsletter:
+		return siteURL + "/newsletters"
+	}
+	return ""
 }
 
 var links = []struct{ label, url, desc string }{
@@ -818,6 +905,9 @@ func wrap(s string, w int) []string {
 	return out
 }
 
+// Wrap exposes the shared plain-text wrapping used by the terminal screens.
+func Wrap(s string, w int) []string { return wrap(s, w) }
+
 // hardWrap breaks lines at exactly w columns. Used for code and URLs.
 func hardWrap(s string, w int) []string {
 	w = max(w, 8)
@@ -827,6 +917,9 @@ func hardWrap(s string, w int) []string {
 	}
 	return out
 }
+
+// HardWrap exposes the shared hard wrapping used for code and URLs.
+func HardWrap(s string, w int) []string { return hardWrap(s, w) }
 
 func styleLines(lines []string, st lipgloss.Style) []string {
 	out := make([]string, len(lines))
@@ -844,6 +937,9 @@ func padRight(s string, w int) string {
 	}
 	return s
 }
+
+// PadRight exposes display-width-aware padding for terminal layouts.
+func PadRight(s string, w int) string { return padRight(s, w) }
 
 func human(d time.Duration) string {
 	if d%time.Minute == 0 && d >= time.Minute {

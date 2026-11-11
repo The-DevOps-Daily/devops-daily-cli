@@ -92,6 +92,17 @@ func Parse(b []byte) (*Snapshot, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("content snapshot: %w", err)
 	}
+	result, err := New(s.Questions, s.Incidents)
+	if err != nil {
+		return nil, err
+	}
+	result.Generated = s.Generated
+	return result, nil
+}
+
+// New builds a daily-rotating snapshot from downloaded content.
+func New(questions []Question, incidents []Incident) (*Snapshot, error) {
+	s := Snapshot{Questions: questions, Incidents: incidents}
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
