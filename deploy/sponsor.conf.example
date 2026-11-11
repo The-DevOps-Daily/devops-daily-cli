@@ -1,0 +1,6 @@
+# One line on every screen: "Supported by <name>: <text>  <url>".
+# On the server this lives at /etc/ssh-site/sponsor.conf. Edit and save;
+# the app picks it up within 10 seconds. An empty file hides the line.
+name=Example Sponsor
+text=What they do, in a few words
+url=https://example.com

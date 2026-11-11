@@ -1,0 +1,6 @@
+# Build output and local state. Host keys never go in git.
+/bin/
+/state/
+*.pem
+host_ed25519*
+feed.json
