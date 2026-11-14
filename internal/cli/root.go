@@ -52,20 +52,46 @@ type usageError struct{ err error }
 func (e usageError) Error() string { return e.err.Error() }
 func (e usageError) Unwrap() error { return e.err }
 
+// exitError ends the program with a chosen exit code. With a nil err
+// nothing more is printed.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e exitError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("exit code %d", e.code)
+	}
+	return e.err.Error()
+}
+func (e exitError) Unwrap() error { return e.err }
+
 func Main(args []string, info BuildInfo) int {
-	app := DefaultApp(info)
-	command := app.Command()
+	return DefaultApp(info).Run(args)
+}
+
+// Run runs one command line and returns the exit code.
+func (a *App) Run(args []string) int {
+	command := a.Command()
 	command.SetArgs(args)
 	if _, _, err := command.Find(args); err != nil {
-		printError(app.Stderr, err)
-		fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
+		printError(a.Stderr, err)
+		fmt.Fprintln(a.Stderr, "Run 'devops-daily --help' for usage.")
 		return 2
 	}
 	if err := command.Execute(); err != nil {
-		printError(app.Stderr, err)
+		var exit exitError
+		if errors.As(err, &exit) {
+			if exit.err != nil {
+				printError(a.Stderr, exit.err)
+			}
+			return exit.code
+		}
+		printError(a.Stderr, err)
 		var use usageError
 		if errors.As(err, &use) {
-			fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
+			fmt.Fprintln(a.Stderr, "Run 'devops-daily --help' for usage.")
 			return 2
 		}
 		return 1
@@ -139,7 +165,7 @@ func (a *App) Command() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "devops-daily",
 		Short:         "Learn DevOps from your terminal",
-		Example:       "  devops-daily                  the home menu\n  devops-daily posts --tag k8s\n  devops-daily read <slug>\n  devops-daily quiz docker\n  devops-daily play dns",
+		Example:       "  devops-daily                  the home menu\n  devops-daily posts --tag k8s\n  devops-daily read <slug>\n  devops-daily quiz docker\n  devops-daily play dns\n  devops-daily check tls github.com",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -165,17 +191,21 @@ func (a *App) Command() *cobra.Command {
 	root.PersistentFlags().BoolVar(&offline, "offline", false, "use cached content only")
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colour")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
-	root.AddCommand(a.postsCmd(), a.readCmd(), a.incidentCmd(), a.playCmd(), a.subscribeCmd(), a.syncCmd(), a.versionCmd(), a.updateCmd(), a.quizCmd(), a.flashcardsCmd(), a.checklistCmd())
+	root.AddCommand(a.postsCmd(), a.readCmd(), a.incidentCmd(), a.playCmd(), a.subscribeCmd(), a.syncCmd(), a.versionCmd(), a.updateCmd(), a.quizCmd(), a.flashcardsCmd(), a.checklistCmd(), a.checkCmd())
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if cmd == root {
 			fmt.Fprintln(a.Stdout, "Learn DevOps from your terminal: posts, quizzes, flashcards, checklists and")
 			fmt.Fprintln(a.Stdout, "a daily incident from DevOps Daily. Run it with no command for the menu.")
 			fmt.Fprintln(a.Stdout)
 			cmd.Print(cmd.UsageString())
-			fmt.Fprintln(a.Stdout, "Content: https://devops-daily.com\nNo tracking: the only network requests are the content download and \"update\".")
+			fmt.Fprintln(a.Stdout, "Content: https://devops-daily.com\nNo tracking: the only network requests are the content download, \"update\" and\nthe hosts you name in \"check\".")
 			return
 		}
-		fmt.Fprintln(a.Stdout, cmd.Short+".")
+		if cmd.Long != "" {
+			fmt.Fprintln(a.Stdout, cmd.Long)
+		} else {
+			fmt.Fprintln(a.Stdout, cmd.Short+".")
+		}
 		fmt.Fprintln(a.Stdout)
 		cmd.Print(cmd.UsageString())
 	})

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -237,21 +236,5 @@ func run(t *testing.T, app *App, args ...string) int {
 	if output, ok := app.Stderr.(*bytes.Buffer); ok {
 		output.Reset()
 	}
-	command := app.Command()
-	command.SetArgs(args)
-	if _, _, err := command.Find(args); err != nil {
-		fmt.Fprintf(app.Stderr, "devops-daily: %s\n", err)
-		fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
-		return 2
-	}
-	if err := command.Execute(); err != nil {
-		fmt.Fprintf(app.Stderr, "devops-daily: %s\n", err)
-		var use usageError
-		if errors.As(err, &use) {
-			fmt.Fprintln(app.Stderr, "Run 'devops-daily --help' for usage.")
-			return 2
-		}
-		return 1
-	}
-	return 0
+	return app.Run(args)
 }

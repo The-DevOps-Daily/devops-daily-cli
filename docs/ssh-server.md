@@ -42,6 +42,11 @@ Built with [Wish](https://github.com/charmbracelet/wish) and
 - The app never queries the client terminal (no OSC or DA requests); colors
   come from `TERM` alone. All feed, quiz and config text is stripped of
   control codes before it is drawn.
+- The app never makes a network request on a visitor's behalf. The CLI's `check`
+  commands (TLS, DNS, headers, email) are left out on purpose: here they
+  would make the server connect to any host a visitor typed.
+  `cmd/ssh-site/imports_test.go` fails if the server imports `internal/check`
+  or `internal/cli`, directly or through another package.
 
 Limits (flags on the binary, defaults shown):
 
@@ -85,7 +90,7 @@ because a wildcard bind would clash with sshd on the tailnet address.
 Needs Go 1.26 or newer.
 
 ```sh
-make test     # unit tests: date picks, feed cache, limits, server hardening, UI layout
+make test     # unit tests: date picks, feed cache, limits, server hardening, UI layout, no check imports
 make build    # static linux/amd64 binary in bin/ssh-site
 make run      # local copy on 127.0.0.1:2222; then: ssh -p 2222 localhost
 ```
