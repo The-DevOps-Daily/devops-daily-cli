@@ -130,7 +130,10 @@ func TestPrintReportCleansAndWraps(t *testing.T) {
 	if !strings.Contains(out, "Result: 1 warning, no problems.") {
 		t.Errorf("summary missing:\n%s", out)
 	}
-	if err := app.printCheck(&check.Report{Check: "dns", Status: check.Pass}, false); err != nil {
+	if err := app.printCheck(&check.Report{Check: "dns", Target: "xn--bcher-kva.de", Unicode: "bücher.de", Status: check.Pass}, false); err != nil {
 		t.Fatalf("a clean report returned %v", err)
+	}
+	if !strings.Contains(calls.stdout.String(), "DNS check for xn--bcher-kva.de (bücher.de)") {
+		t.Errorf("title does not show both forms:\n%s", calls.stdout.String())
 	}
 }

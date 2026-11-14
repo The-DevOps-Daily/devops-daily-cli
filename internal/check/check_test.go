@@ -65,6 +65,9 @@ func TestHostPort(t *testing.T) {
 		{"[::1]:9000", "::1", "9000"},
 		{"[::1]", "::1", "443"},
 		{"::1", "::1", "443"},
+		{"https://[::1]:9443/x", "::1", "9443"},
+		{"bücher.de", "xn--bcher-kva.de", "443"},
+		{"https://Bücher.de:8443/", "xn--bcher-kva.de", "8443"},
 	}
 	for _, c := range cases {
 		host, port, err := hostPort(c.in, "443")
@@ -80,15 +83,32 @@ func TestHostPort(t *testing.T) {
 }
 
 func TestDomainName(t *testing.T) {
-	for in, want := range map[string]string{"Example.COM.": "example.com", "me@example.com": "example.com", "https://example.com/x": "example.com", "_dmarc.example.com": "_dmarc.example.com"} {
+	for in, want := range map[string]string{
+		"Example.COM.":                  "example.com",
+		"me@example.com":                "example.com",
+		"a/b@example.com":               "example.com",
+		"https://example.com/x":         "example.com",
+		"https://example.com:8443/path": "example.com",
+		"example.com/path":              "example.com",
+		"example.com:25":                "example.com",
+		"_dmarc.example.com":            "_dmarc.example.com",
+		"info@Bücher.de":                "xn--bcher-kva.de",
+		"xn--bcher-kva.de":              "xn--bcher-kva.de",
+	} {
 		if got, err := domainName(in); err != nil || got != want {
 			t.Errorf("domainName(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", "1.1.1.1", "a..b", "bad name.com"} {
+	for _, bad := range []string{"", "1.1.1.1", "a..b", "bad name.com", "me@", "bü cher.de"} {
 		if _, err := domainName(bad); err == nil {
 			t.Errorf("domainName(%q) gave no error", bad)
 		}
+	}
+	if got := unicodeName("xn--bcher-kva.de"); got != "bücher.de" {
+		t.Errorf("unicodeName = %q", got)
+	}
+	if got := unicodeName("example.com"); got != "" {
+		t.Errorf("unicodeName(example.com) = %q", got)
 	}
 }
 

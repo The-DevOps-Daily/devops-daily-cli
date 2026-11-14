@@ -81,7 +81,7 @@ func TestHeadersMissingAndWeak(t *testing.T) {
 	if r.ExitCode != 1 {
 		t.Fatalf("exit = %d", r.ExitCode)
 	}
-	want := map[string]Status{"https": Warn, "hsts": Info, "csp": Missing, "nosniff": Missing, "framing": Missing, "referrer": Missing, "permissions": Missing}
+	want := map[string]Status{"https": Warn, "hsts": Info, "csp": Missing, "nosniff": Missing, "framing": Missing, "referrer": Info, "permissions": Info}
 	for id, status := range want {
 		if f := finding(t, r, id); f.Status != status {
 			t.Errorf("%s = %+v, want %s", id, f, status)
@@ -105,7 +105,10 @@ func TestHeadersMissingAndWeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"status", "hsts", "csp", "nosniff", "framing", "referrer", "permissions"} {
+	if f := finding(t, r, "permissions"); f.Status != Info || !strings.Contains(f.Value, "Feature-Policy") {
+		t.Errorf("permissions = %+v", f)
+	}
+	for _, id := range []string{"status", "hsts", "csp", "nosniff", "framing", "referrer"} {
 		if f := finding(t, r, id); f.Status != Warn {
 			t.Errorf("%s = %+v, want warn", id, f)
 		}
@@ -186,20 +189,125 @@ func TestReferrerPolicyAndCSP(t *testing.T) {
 		}
 	}
 	cases := map[string]Status{
-		"default-src 'self'":                          Pass,
-		"script-src 'self' 'unsafe-eval'":             Warn,
-		"script-src 'unsafe-inline'":                  Warn,
-		"script-src 'unsafe-inline' 'sha256-abc='":    Pass,
-		"img-src 'self'":                              Warn,
-		"script-src https:, default-src 'self'":       Pass,
-		"default-src 'none'; script-src 'self' data:": Warn,
+		"default-src 'self'":                                                  Pass,
+		"script-src 'self' 'unsafe-eval'":                                     Warn,
+		"script-src 'unsafe-inline'":                                          Warn,
+		"script-src 'unsafe-inline' 'sha256-abc='":                            Pass,
+		"img-src 'self'":                                                      Warn,
+		"script-src https:, default-src 'self'":                               Pass,
+		"default-src 'none'; script-src 'self' data:":                         Warn,
+		"script-src 'none'; script-src-elem * 'unsafe-inline'":                Warn,
+		"script-src 'self'; script-src-attr 'unsafe-inline'":                  Warn,
+		"script-src 'self'; script-src-elem 'self' 'nonce-a' 'unsafe-inline'": Pass,
+		"script-src 'self' https://*":                                         Warn,
+		"script-src-elem *, script-src 'self'":                                Pass,
 	}
 	for policy, want := range cases {
 		if got, _, _ := judgeCSP(parseCSP(policy)); got != want {
 			t.Errorf("judgeCSP(%q) = %s, want %s", policy, got, want)
 		}
 	}
-	if age, ok := maxAge(`max-age="600"; preload`); !ok || age != 600 {
-		t.Errorf("maxAge = %d, %v", age, ok)
+	if age, ok, dup := maxAge(`max-age="600"; preload`); !ok || age != 600 || dup != "" {
+		t.Errorf("maxAge = %d, %v, %q", age, ok, dup)
+	}
+	if _, _, dup := maxAge("max-age=31536000; max-age=0"); dup != "max-age" {
+		t.Errorf("duplicate max-age not found: %q", dup)
+	}
+	if _, _, dup := maxAge("max-age=600; includeSubDomains; IncludeSubDomains"); dup != "includesubdomains" {
+		t.Errorf("duplicate includeSubDomains not found: %q", dup)
+	}
+}
+
+func TestSecurityHeaderRules(t *testing.T) {
+	h := http.Header{}
+	h.Set("Strict-Transport-Security", "max-age=31536000; max-age=0")
+	h.Add("Content-Security-Policy", "default-src 'self'; frame-ancestors *")
+	h.Add("Content-Security-Policy", "frame-ancestors 'none'")
+	h.Add("Referrer-Policy", "no-referrer")
+	h.Add("Referrer-Policy", "unsafe-url")
+	r := &Report{}
+	r.add(securityHeaders(h, true))
+	if f := finding(t, r, "hsts"); f.Status != Warn || !strings.Contains(f.Meaning, "max-age appears more than once") {
+		t.Errorf("hsts = %+v", f)
+	}
+	if f := finding(t, r, "framing"); f.Status != Pass || f.Value != "frame-ancestors 'none'" {
+		t.Errorf("framing over two policies = %+v", f)
+	}
+	if f := finding(t, r, "referrer"); f.Status != Warn || f.Value != "unsafe-url" {
+		t.Errorf("referrer = %+v", f)
+	}
+
+	h = http.Header{}
+	h.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors * 'self'")
+	r = &Report{}
+	r.add(securityHeaders(h, true))
+	if f := finding(t, r, "framing"); f.Status != Warn {
+		t.Errorf("frame-ancestors with * = %+v", f)
+	}
+	for _, id := range []string{"referrer", "permissions"} {
+		if f := finding(t, r, id); f.Status != Info || f.Value != "not set" {
+			t.Errorf("%s = %+v, want info", id, f)
+		}
+	}
+	for _, id := range []string{"hsts", "nosniff"} {
+		if f := finding(t, r, id); f.Status != Missing {
+			t.Errorf("%s = %+v, want missing", id, f)
+		}
+	}
+}
+
+func TestHeadersFollowsOnlyRedirectStatuses(t *testing.T) {
+	var other int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/304":
+			w.Header().Set("Location", "/other")
+			w.WriteHeader(http.StatusNotModified)
+		case "/300":
+			w.Header().Set("Location", "/other")
+			w.WriteHeader(http.StatusMultipleChoices)
+		case "/303":
+			http.Redirect(w, r, "/other", http.StatusSeeOther)
+		default:
+			other++
+		}
+	}))
+	defer srv.Close()
+	for path, hops := range map[string]int{"/304": 1, "/300": 1, "/303": 2} {
+		r, err := Headers(context.Background(), srv.URL+path, HeadersOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(r.Details.(*HeadersDetails).Hops); got != hops {
+			t.Errorf("%s: %d hops, want %d", path, got, hops)
+		}
+	}
+	if other != 1 {
+		t.Errorf("/other was requested %d times, want 1", other)
+	}
+}
+
+func TestClientUsesTimeoutForDialAndHandshake(t *testing.T) {
+	client := newClient(30*time.Second, nil)
+	transport := client.Transport.(*http.Transport)
+	if client.Timeout != 30*time.Second || transport.TLSHandshakeTimeout != 30*time.Second || transport.ResponseHeaderTimeout != 30*time.Second || transport.DialContext == nil {
+		t.Fatalf("client timeout %s, handshake %s, headers %s", client.Timeout, transport.TLSHandshakeTimeout, transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestParseURLInternationalHost(t *testing.T) {
+	u, err := parseURL("Bücher.de:8443/x#top")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.String() != "https://xn--bcher-kva.de:8443/x" {
+		t.Fatalf("url = %s", u)
+	}
+	u, err = parseURL("https://user:secret@[::1]:9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.String() != "https://[::1]:9000/" {
+		t.Fatalf("url = %s", u)
 	}
 }

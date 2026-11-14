@@ -73,6 +73,7 @@ func (s *Section) add(id string, status Status, label, value, meaning string) {
 type Report struct {
 	Check     string    `json:"check"`
 	Target    string    `json:"target"`
+	Unicode   string    `json:"unicode,omitempty"` // the target's Unicode form, for international names
 	Status    Status    `json:"status"`
 	ExitCode  int       `json:"exitCode"`
 	Warnings  int       `json:"warnings"`

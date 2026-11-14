@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,17 +55,11 @@ func Headers(ctx context.Context, rawURL string, opts HeadersOptions) (*Report, 
 		return nil, err
 	}
 	timeout := timeoutOr(opts.Timeout)
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{RootCAs: opts.RootCAs}
-	client := &http.Client{
-		Transport:     transport,
-		Timeout:       timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	client := newClient(timeout, opts.RootCAs)
 	defer client.CloseIdleConnections()
 
 	d := &HeadersDetails{URL: target.String(), Hops: []Hop{}, Headers: map[string]string{}}
-	r := &Report{Check: "headers", Target: target.String(), Details: d, LearnMore: learnHeaders}
+	r := &Report{Check: "headers", Target: target.String(), Unicode: unicodeName(target.Hostname()), Details: d, LearnMore: learnHeaders}
 	hops := Section{Title: "Requests", Note: "Each request, its HTTP status and where a redirect sent you next."}
 	seen := map[string]bool{}
 	current := target
@@ -87,7 +83,7 @@ func Headers(ctx context.Context, rawURL string, opts HeadersOptions) (*Report, 
 		resp.Body.Close()
 		hop := Hop{URL: current.String(), Status: resp.StatusCode}
 		location := resp.Header.Get("Location")
-		if resp.StatusCode < 300 || resp.StatusCode > 399 || location == "" {
+		if !redirectStatus(resp.StatusCode) || location == "" {
 			d.Hops = append(d.Hops, hop)
 			hops.add("hop", Info, fmt.Sprintf("%d.", i+1), fmt.Sprintf("%d %s", resp.StatusCode, current), "")
 			final = resp
@@ -136,6 +132,31 @@ func Headers(ctx context.Context, rawURL string, opts HeadersOptions) (*Report, 
 	return r.finish(), nil
 }
 
+// newClient makes a client that follows no redirects by itself and uses
+// timeout for the whole request and for the dial and TLS handshake too.
+func newClient(timeout time.Duration, roots *x509.CertPool) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = timeout
+	transport.ResponseHeaderTimeout = timeout
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// redirectStatus is true for the statuses browsers follow. A 304 or 300
+// with a Location header is not a redirect.
+func redirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
 func parseURL(raw string) (*url.URL, error) {
 	value := strings.TrimSpace(raw)
 	if !strings.Contains(value, "://") {
@@ -148,10 +169,17 @@ func parseURL(raw string) (*url.URL, error) {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("%q: only http:// and https:// URLs can be checked", raw)
 	}
-	if _, _, err := hostPort(u.Host, "443"); err != nil {
+	host, _, err := hostPort(u.Host, "443")
+	if err != nil {
 		return nil, err
 	}
-	u.Fragment, u.User = "", nil
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" {
+		host += ":" + port
+	}
+	u.Host, u.Fragment, u.User = host, "", nil
 	if u.Path == "" {
 		u.Path = "/"
 	}
@@ -198,8 +226,10 @@ func securityHeaders(h http.Header, https bool) Section {
 	case hsts == "":
 		s.add("hsts", Missing, "Strict-Transport-Security", "missing", "Tells browsers to always use HTTPS here, so a visit cannot be downgraded to plain HTTP.")
 	default:
-		age, ok := maxAge(hsts)
+		age, ok, dup := maxAge(hsts)
 		switch {
+		case dup != "":
+			s.add("hsts", Warn, "Strict-Transport-Security", hsts, dup+" appears more than once, which makes the header invalid, so browsers ignore it.")
 		case !ok:
 			s.add("hsts", Warn, "Strict-Transport-Security", hsts, "There is no valid max-age, so browsers ignore it. Use max-age=31536000 (one year).")
 		case age == 0:
@@ -216,7 +246,7 @@ func securityHeaders(h http.Header, https bool) Section {
 		status, reason, scripts := judgeCSP(policies)
 		value := csp
 		if len(csp) > 200 && scripts != "" {
-			others := -1
+			others := -(strings.Count(scripts, "; ") + 1)
 			for _, p := range policies {
 				others += len(p)
 			}
@@ -240,10 +270,10 @@ func securityHeaders(h http.Header, https bool) Section {
 	}
 
 	frame := strings.TrimSpace(h.Get("X-Frame-Options"))
-	ancestors, hasAncestors := directive(policies, "frame-ancestors")
+	ancestors, hasAncestors, strict := frameAncestors(policies)
 	switch {
-	case hasAncestors && (ancestors == "*" || ancestors == "https:" || ancestors == "http:"):
-		s.add("framing", Warn, "Frame protection", "frame-ancestors "+ancestors, "Any site may show this page in a frame, which allows clickjacking.")
+	case hasAncestors && !strict:
+		s.add("framing", Warn, "Frame protection", "frame-ancestors "+ancestors, "A wildcard source lets any site show this page in a frame, which allows clickjacking.")
 	case hasAncestors:
 		s.add("framing", Pass, "Frame protection", "frame-ancestors "+ancestors, "The CSP decides which sites may show this page in a frame (stops clickjacking).")
 	case strings.EqualFold(frame, "DENY") || strings.EqualFold(frame, "SAMEORIGIN"):
@@ -254,10 +284,10 @@ func securityHeaders(h http.Header, https bool) Section {
 		s.add("framing", Missing, "Frame protection", "missing (no X-Frame-Options or CSP frame-ancestors)", "Without it, other sites can show this page in a hidden frame and trick clicks (clickjacking).")
 	}
 
-	referrer := referrerPolicy(h.Get("Referrer-Policy"))
+	referrer := referrerPolicy(strings.Join(h.Values("Referrer-Policy"), ","))
 	switch referrer {
 	case "":
-		s.add("referrer", Missing, "Referrer-Policy", "missing", "Browsers then use strict-origin-when-cross-origin, a safe default. Set it to make the choice explicit.")
+		s.add("referrer", Info, "Referrer-Policy", "not set", "Browsers then use strict-origin-when-cross-origin, a safe default. Set it to make the choice explicit.")
 	case "unsafe-url", "no-referrer-when-downgrade":
 		s.add("referrer", Warn, "Referrer-Policy", referrer, "Sends the full URL, with paths and query strings, to other sites. Use strict-origin-when-cross-origin.")
 	case "no-referrer", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "origin", "origin-when-cross-origin":
@@ -271,9 +301,9 @@ func securityHeaders(h http.Header, https bool) Section {
 	case permissions != "":
 		s.add("permissions", Pass, "Permissions-Policy", permissions, "Turns off browser features (camera, microphone, location and so on) the page does not use.")
 	case h.Get("Feature-Policy") != "":
-		s.add("permissions", Warn, "Permissions-Policy", "only the old Feature-Policy", "Feature-Policy is the old name. Browsers now read Permissions-Policy.")
+		s.add("permissions", Info, "Permissions-Policy", "not set (only the old Feature-Policy)", "Feature-Policy is the old name. Browsers now read Permissions-Policy.")
 	default:
-		s.add("permissions", Missing, "Permissions-Policy", "missing", "Lets you turn off browser features (camera, microphone, location) the page does not use.")
+		s.add("permissions", Info, "Permissions-Policy", "not set", "Optional. Lets you turn off browser features (camera, microphone, location) the page does not use.")
 	}
 	return s
 }
@@ -346,15 +376,26 @@ func cacheMeaning(cc string) string {
 	return strings.ToUpper(text[:1]) + text[1:] + "."
 }
 
-func maxAge(hsts string) (int64, bool) {
+// maxAge reads max-age from an HSTS header. dup names a directive that
+// appears twice, which makes the whole header invalid.
+func maxAge(hsts string) (age int64, ok bool, dup string) {
+	seen := map[string]bool{}
 	for _, part := range strings.Split(hsts, ";") {
-		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "max-age") {
+		key, value, _ := strings.Cut(strings.TrimSpace(part), "=")
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if seen[key] {
+			return 0, false, key
+		}
+		seen[key] = true
+		if key == "max-age" {
 			n, err := strconv.ParseInt(strings.Trim(strings.TrimSpace(value), `"`), 10, 64)
-			return n, err == nil && n >= 0
+			age, ok = n, err == nil && n >= 0
 		}
 	}
-	return 0, false
+	return age, ok, ""
 }
 
 // parseCSP splits one or more policies (comma separated) into directives.
@@ -379,52 +420,108 @@ func parseCSP(value string) []map[string][]string {
 	return policies
 }
 
-func directive(policies []map[string][]string, name string) (string, bool) {
+// frameAncestors combines frame-ancestors from every policy. The browser
+// enforces all of them, so one without a wildcard source blocks framing.
+func frameAncestors(policies []map[string][]string) (value string, found, strict bool) {
 	for _, p := range policies {
-		if v, ok := p[name]; ok {
-			return strings.Join(v, " "), true
-		}
-	}
-	return "", false
-}
-
-// judgeCSP looks at the sources allowed for scripts and returns the
-// directive it judged. With several policies the browser enforces all of
-// them, so the strictest one counts.
-func judgeCSP(policies []map[string][]string) (Status, string, string) {
-	reason, shown := "No script-src or default-src, so scripts may load from anywhere.", ""
-	for _, p := range policies {
-		key := "script-src"
-		sources, ok := p[key]
-		if !ok {
-			key = "default-src"
-			sources, ok = p[key]
-		}
+		sources, ok := p["frame-ancestors"]
 		if !ok {
 			continue
 		}
-		shown = strings.TrimSpace(key + " " + strings.Join(sources, " "))
-		hasNonce := false
-		for _, src := range sources {
-			l := strings.ToLower(src)
-			if strings.HasPrefix(l, "'nonce-") || strings.HasPrefix(l, "'sha256-") || strings.HasPrefix(l, "'sha384-") || strings.HasPrefix(l, "'sha512-") || l == "'strict-dynamic'" {
-				hasNonce = true
-			}
+		found = true
+		joined := strings.Join(sources, " ")
+		if !slices.ContainsFunc(sources, wildcardSource) {
+			return joined, true, true
 		}
-		var weak []string
-		for _, src := range sources {
-			l := strings.ToLower(src)
-			switch {
-			case l == "'unsafe-inline'" && !hasNonce, l == "'unsafe-eval'", l == "*", l == "http:", l == "https:", l == "data:":
-				weak = append(weak, src)
-			}
+		if value == "" {
+			value = joined
 		}
-		if len(weak) == 0 {
-			return Pass, "Scripts may load only from the sources listed, which stops most cross-site scripting.", shown
-		}
-		reason = "Scripts are allowed from " + strings.Join(weak, " ") + ", so an injected script can still run. Use nonces or hashes instead."
 	}
-	return Warn, reason, shown
+	return value, found, false
+}
+
+// wildcardSource matches any site: *, a bare scheme like https:, or a
+// scheme with a * host.
+func wildcardSource(src string) bool {
+	l := strings.ToLower(src)
+	return l == "*" || l == "http:" || l == "https:" || strings.HasSuffix(l, "://*")
+}
+
+// weakSources lists the sources that let an injected script run.
+// 'unsafe-inline' does not count when a nonce, hash or 'strict-dynamic' is
+// present, since browsers then ignore it.
+func weakSources(sources []string) []string {
+	hasNonce := false
+	for _, src := range sources {
+		l := strings.ToLower(src)
+		if strings.HasPrefix(l, "'nonce-") || strings.HasPrefix(l, "'sha256-") || strings.HasPrefix(l, "'sha384-") || strings.HasPrefix(l, "'sha512-") || l == "'strict-dynamic'" {
+			hasNonce = true
+		}
+	}
+	var weak []string
+	for _, src := range sources {
+		l := strings.ToLower(src)
+		if l == "'unsafe-inline'" && !hasNonce || l == "'unsafe-eval'" || l == "data:" || wildcardSource(l) {
+			weak = append(weak, src)
+		}
+	}
+	return weak
+}
+
+var scriptDirectives = []string{"script-src", "script-src-elem", "script-src-attr"}
+
+// scriptSources returns the directive that controls kind in p, following
+// the fallback script-src-elem/-attr -> script-src -> default-src.
+func scriptSources(p map[string][]string, kind string) (string, []string, bool) {
+	for _, name := range []string{kind, "script-src", "default-src"} {
+		if sources, ok := p[name]; ok {
+			return name, sources, true
+		}
+	}
+	return "", nil, false
+}
+
+// judgeCSP checks the sources allowed for scripts: script-src and, when
+// set, script-src-elem (script tags) and script-src-attr (inline event
+// handlers). Each kind is safe when at least one policy restricts it,
+// since the browser enforces every policy. It also returns the directives
+// it judged, for display.
+func judgeCSP(policies []map[string][]string) (Status, string, string) {
+	safe := map[string]bool{}
+	var weak []string
+	shown := ""
+	restricted := false
+	for _, p := range policies {
+		var parts []string
+		for _, kind := range scriptDirectives {
+			name, sources, ok := scriptSources(p, kind)
+			if !ok {
+				continue
+			}
+			restricted = true
+			if _, own := p[kind]; own || kind == "script-src" {
+				part := strings.TrimSpace(name + " " + strings.Join(sources, " "))
+				if !slices.Contains(parts, part) {
+					parts = append(parts, part)
+				}
+			}
+			if w := weakSources(sources); len(w) == 0 {
+				safe[kind] = true
+			} else if desc := strings.Join(w, " ") + " (" + name + ")"; !slices.Contains(weak, desc) {
+				weak = append(weak, desc)
+			}
+		}
+		if shown == "" {
+			shown = strings.Join(parts, "; ")
+		}
+	}
+	if !restricted {
+		return Warn, "No script-src or default-src, so scripts may load from anywhere.", shown
+	}
+	if safe["script-src"] && safe["script-src-elem"] && safe["script-src-attr"] {
+		return Pass, "Scripts may load only from the sources listed, which stops most cross-site scripting.", shown
+	}
+	return Warn, "Scripts are allowed from " + strings.Join(weak, ", ") + ", so an injected script can still run. Use nonces or hashes instead.", shown
 }
 
 // referrerPolicy returns the policy browsers use: the last value they know.

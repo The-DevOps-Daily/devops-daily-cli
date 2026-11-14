@@ -66,7 +66,7 @@ func TLS(ctx context.Context, target string, opts TLSOptions) (*Report, error) {
 	timeout := timeoutOr(opts.Timeout)
 	address := net.JoinHostPort(host, port)
 	d := &TLSDetails{Host: host, Port: port}
-	r := &Report{Check: "tls", Target: address, Details: d, LearnMore: learnTLS}
+	r := &Report{Check: "tls", Target: address, Unicode: unicodeName(host), Details: d, LearnMore: learnTLS}
 	conn := Section{Title: "Connection"}
 
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)

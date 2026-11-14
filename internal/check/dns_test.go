@@ -78,6 +78,49 @@ func TestDNSCNAMEChainAndDangling(t *testing.T) {
 	}
 }
 
+func TestDNSFollowsCNAMEOnlyAnswers(t *testing.T) {
+	server := fakeDNS(t,
+		"alias.test. 60 IN CNAME missing.test.",
+		"loop1.test. 60 IN CNAME loop2.test.",
+		"loop2.test. 60 IN CNAME loop1.test.",
+		"www.example.test. 60 IN CNAME edge.example.net.",
+		"edge.example.net. 120 IN CNAME host.example.org.",
+		"host.example.org. 30 IN A 192.0.2.10",
+	)
+	r, err := DNS(context.Background(), "alias.test", DNSOptions{Server: server, Types: []string{"CNAME"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := finding(t, r, "nxdomain"); f.Label != "Dangling alias" || !strings.Contains(f.Value, "missing.test") || r.ExitCode != 2 {
+		t.Fatalf("dangling = %+v, exit %d", f, r.ExitCode)
+	}
+	r, err = DNS(context.Background(), "loop1.test", DNSOptions{Server: server, Types: []string{"CNAME"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := finding(t, r, "cname.loop"); f.Status != Fail || r.ExitCode != 2 {
+		t.Fatalf("loop = %+v", f)
+	}
+	r, err = DNS(context.Background(), "www.example.test", DNSOptions{Server: server, Types: []string{"CNAME"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := r.Details.(*DNSDetails); len(d.CNAMEChain) != 2 || r.ExitCode != 0 {
+		t.Fatalf("chain = %+v, exit %d", d.CNAMEChain, r.ExitCode)
+	}
+}
+
+func TestDNSInternationalName(t *testing.T) {
+	server := fakeDNS(t, "xn--bcher-kva.test. 300 IN A 192.0.2.7")
+	r, err := DNS(context.Background(), "Bücher.test", DNSOptions{Server: server, Types: []string{"A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Target != "xn--bcher-kva.test" || r.Unicode != "bücher.test" || finding(t, r, "a").Value != "192.0.2.7" {
+		t.Fatalf("report = %+v", r)
+	}
+}
+
 func TestDNSTypesAndWarnings(t *testing.T) {
 	server := fakeDNS(t,
 		"mail-only.test. 300 IN MX 10 mx.example.test.",

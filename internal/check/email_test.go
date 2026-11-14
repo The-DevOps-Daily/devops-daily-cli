@@ -5,7 +5,9 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -114,7 +116,7 @@ func TestEmailProblems(t *testing.T) {
 	if r.ExitCode != 2 {
 		t.Fatalf("exit code = %d", r.ExitCode)
 	}
-	want := map[string]Status{"mx": Warn, "spf": Pass, "spf.include": Fail, "spf.all": Fail, "dmarc.p": Warn, "dmarc.pct": Warn, "dmarc.rua": Warn, "mta-sts": Info, "tls-rpt": Info}
+	want := map[string]Status{"mx": Warn, "spf": Pass, "spf.problem": Fail, "spf.all": Fail, "dmarc.p": Warn, "dmarc.pct": Warn, "dmarc.rua": Warn, "mta-sts": Info, "tls-rpt": Info}
 	for id, status := range want {
 		if f := finding(t, r, id); f.Status != status {
 			t.Errorf("%s = %+v, want %s", id, f, status)
@@ -152,7 +154,7 @@ func TestEmailProblems(t *testing.T) {
 	if f := finding(t, r, "dmarc"); f.Status != Missing {
 		t.Fatalf("dmarc = %+v", f)
 	}
-	if f := finding(t, r, "dkim.none"); f.Status != Warn {
+	if f := finding(t, r, "dkim.none"); f.Status != Info || !strings.Contains(f.Meaning, "--selector") {
 		t.Fatalf("dkim.none = %+v", f)
 	}
 }
@@ -243,5 +245,166 @@ func TestTagList(t *testing.T) {
 	tags := tagList("v=DMARC1; P=reject ;rua=mailto:a@example.com,mailto:b@example.com; p=none")
 	if tags["v"] != "DMARC1" || tags["p"] != "reject" || tags["rua"] != "mailto:a@example.com,mailto:b@example.com" {
 		t.Fatalf("tags = %v", tags)
+	}
+}
+
+func TestSPFEvaluationRules(t *testing.T) {
+	var records []string
+	for i := 1; i <= 11; i++ {
+		records = append(records, fmt.Sprintf("manymx.test. 300 IN MX %d mx%d.manymx.test.", i, i))
+	}
+	records = append(records,
+		txt("order.test.", "v=spf1 +all -all"),
+		txt("after.test.", "v=spf1 -all include:missing.test"),
+		txt("redirall.test.", "v=spf1 redirect=_spf.redirall.test -all"),
+		txt("manymx.test.", "v=spf1 mx -all"),
+		txt("badip.test.", "v=spf1 ip4:999.999.999.999 ip6:2001:db8::/129 ip4:192.0.2.0/24 ip6:2001:db8::/32 a/33 mx//64 a:x.test/24//64 ip4:2001:db8::1 -all"),
+		txt("unknown.test.", "v=spf1 foo:bar -all"),
+		txt("macro.test.", "v=spf1 include:%{d}._spf.test exists:%{i}._spf.test -all"),
+		txt("macroredir.test.", "v=spf1 redirect=%{d}._spf.test"),
+		txt("nested.test.", "v=spf1 include:inner.test -all"),
+		txt("inner.test.", "v=spf1 ip4:300.1.1.1 -all"),
+	)
+	server := fakeDNS(t, records...)
+	spfOf := func(domain string) (*SPFDetails, *Report) {
+		t.Helper()
+		r, err := Email(context.Background(), domain, EmailOptions{Server: server})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &r.Details.(*EmailDetails).SPF, r
+	}
+
+	if spf, r := spfOf("order.test"); spf.All != "+all" || finding(t, r, "spf.all").Status != Fail {
+		t.Errorf("first all must win: %+v", spf)
+	}
+	if spf, _ := spfOf("after.test"); spf.All != "-all" || spf.Lookups != 0 || len(spf.Problems) != 0 {
+		t.Errorf("terms after all must not be evaluated: %+v", spf)
+	}
+	if spf, _ := spfOf("redirall.test"); spf.Lookups != 0 || spf.All != "-all" {
+		t.Errorf("redirect with all must be ignored: %+v", spf)
+	}
+	if spf, r := spfOf("manymx.test"); len(spf.Problems) != 1 || !strings.Contains(spf.Problems[0], "11 MX hosts") || r.ExitCode != 2 {
+		t.Errorf("mx with 11 hosts = %+v", spf)
+	}
+	spf, _ := spfOf("badip.test")
+	if len(spf.Problems) != 4 {
+		t.Errorf("bad addresses: %q", spf.Problems)
+	}
+	for _, bad := range []string{"ip4:999.999.999.999", "ip6:2001:db8::/129", "a/33", "ip4:2001:db8::1"} {
+		if !slices.ContainsFunc(spf.Problems, func(p string) bool { return strings.HasPrefix(p, bad+" ") }) {
+			t.Errorf("no problem for %s: %q", bad, spf.Problems)
+		}
+	}
+	if spf, _ := spfOf("unknown.test"); len(spf.Problems) != 1 || !strings.Contains(spf.Problems[0], "not an SPF mechanism") {
+		t.Errorf("unknown mechanism: %+v", spf)
+	}
+	if spf, r := spfOf("macro.test"); len(spf.Macros) != 1 || spf.Macros[0] != "include:%{d}._spf.test" || spf.Lookups != 2 || finding(t, r, "spf.lookups").Status != Warn {
+		t.Errorf("macros: %+v", spf)
+	}
+	if spf, _ := spfOf("macroredir.test"); len(spf.Macros) != 1 || !strings.HasPrefix(spf.Macros[0], "redirect=") || spf.Lookups != 1 {
+		t.Errorf("redirect macro: %+v", spf)
+	}
+	if spf, _ := spfOf("nested.test"); len(spf.Problems) != 1 || !strings.Contains(spf.Problems[0], "in the record of inner.test") {
+		t.Errorf("nested syntax error: %+v", spf)
+	}
+}
+
+func TestDMARCRecordRules(t *testing.T) {
+	server := fakeDNS(t,
+		txt("case.test.", "v=spf1 -all"),
+		txt("_dmarc.case.test.", "v=dmarc1; p=reject; rua=mailto:r@case.test"),
+		txt("space.test.", "v=spf1 -all"),
+		txt("_dmarc.space.test.", "v = DMARC1; p=reject; rua=mailto:r@space.test"),
+		txt("rej.test.", "v=spf1 -all"),
+		txt("_dmarc.rej.test.", "v=DMARC1; p=reject; t=y; rua=mailto:r@rej.test"),
+		txt("quar.test.", "v=spf1 -all"),
+		txt("_dmarc.quar.test.", "v=DMARC1; p=quarantine; t=y; rua=mailto:r@quar.test"),
+	)
+	email := func(domain string) *Report {
+		t.Helper()
+		r, err := Email(context.Background(), domain, EmailOptions{Server: server})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if f := finding(t, email("case.test"), "dmarc"); f.Status != Fail || !strings.Contains(f.Meaning, "exactly v=DMARC1") {
+		t.Errorf("lower-case version = %+v", f)
+	}
+	if r := email("space.test"); finding(t, r, "dmarc").Status != Pass || finding(t, r, "dmarc.p").Value != "reject" {
+		t.Errorf("spaces around = should be fine: %+v", r.Sections)
+	}
+	if f := finding(t, email("rej.test"), "dmarc.t"); f.Status != Warn || !strings.Contains(f.Meaning, "quarantine instead of reject") {
+		t.Errorf("t=y with reject = %+v", f)
+	}
+	if f := finding(t, email("quar.test"), "dmarc.t"); !strings.Contains(f.Meaning, "none instead of quarantine") {
+		t.Errorf("t=y with quarantine = %+v", f)
+	}
+}
+
+func TestDKIMAndTransportRecordRules(t *testing.T) {
+	key := rsaKey(t, 2048)
+	server := fakeDNS(t,
+		txt("dk.test.", "v=spf1 -all"),
+		txt("default._domainkey.dk.test.", "v=DKIM1; p="),
+		txt("v2._domainkey.dk.test.", "v=DKIM2; p="+key),
+		txt("nop._domainkey.dk.test.", "v=DKIM1; k=rsa"),
+		txt("bang._domainkey.dk.test.", "v=DKIM1; p=!"),
+		txt("dupe._domainkey.dk.test.", "v=DKIM1; p="+key+"; p="+key),
+		txt("kx._domainkey.dk.test.", "v=DKIM1; k=dsa; p=AAAA"),
+		txt("late._domainkey.dk.test.", "k=rsa; v=DKIM1; p="+key),
+		txt("junk._domainkey.dk.test.", "v=DKIM1; p=AAAA"),
+		txt("_mta-sts.dk.test.", "v=STSv1"),
+		txt("_smtp._tls.dk.test.", "v=TLSRPTv1"),
+		txt("two.test.", "v=spf1 -all"),
+		txt("_mta-sts.two.test.", "v=STSv1; id=a1"),
+		txt("_mta-sts.two.test.", "v=STSv1; id=b2"),
+		txt("_smtp._tls.two.test.", "v=TLSRPTv1; rua=mailto:a@two.test"),
+		txt("_smtp._tls.two.test.", "v=TLSRPTv1; rua=mailto:b@two.test"),
+	)
+	r, err := Email(context.Background(), "dk.test", EmailOptions{Server: server, Selectors: []string{"v2", "nop", "bang", "dupe", "kx", "late", "junk"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := r.Details.(*EmailDetails)
+	if k := dkimFor(d, "default"); !k.Revoked || k.Problem != "" {
+		t.Errorf("default = %+v", k)
+	}
+	for _, sel := range []string{"v2", "nop", "bang", "dupe", "kx", "late", "junk"} {
+		if k := dkimFor(d, sel); !k.Found || k.Problem == "" {
+			t.Errorf("%s = %+v, want a problem", sel, k)
+		}
+	}
+	statuses := map[string]Status{}
+	for _, s := range r.Sections {
+		for _, f := range s.Findings {
+			if f.ID == "dkim" {
+				statuses[f.Label] = f.Status
+			}
+		}
+	}
+	if statuses["default"] != Info || statuses["nop"] != Fail || statuses["bang"] != Fail {
+		t.Errorf("DKIM statuses = %v", statuses)
+	}
+	if f := finding(t, r, "mta-sts"); f.Status != Fail || !strings.Contains(f.Meaning, "id=") {
+		t.Errorf("mta-sts without id = %+v", f)
+	}
+	if f := finding(t, r, "tls-rpt"); f.Status != Fail || !strings.Contains(f.Meaning, "rua=") {
+		t.Errorf("tls-rpt without rua = %+v", f)
+	}
+	if r.ExitCode != 2 {
+		t.Errorf("exit = %d", r.ExitCode)
+	}
+
+	r, err = Email(context.Background(), "two.test", EmailOptions{Server: server})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := finding(t, r, "mta-sts"); f.Status != Fail || f.Value != "2 records" {
+		t.Errorf("two MTA-STS records = %+v", f)
+	}
+	if f := finding(t, r, "tls-rpt"); f.Status != Fail || f.Value != "2 records" {
+		t.Errorf("two TLS-RPT records = %+v", f)
 	}
 }

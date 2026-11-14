@@ -67,7 +67,7 @@ func DNS(ctx context.Context, input string, opts DNSOptions) (*Report, error) {
 		return nil, err
 	}
 	d := &DNSDetails{Name: name, Server: res.server, Records: []Record{}, CNAMEChain: []Record{}}
-	r := &Report{Check: "dns", Target: name, Details: d, LearnMore: learnDNS}
+	r := &Report{Check: "dns", Target: name, Unicode: unicodeName(name), Details: d, LearnMore: learnDNS}
 	server := Section{Title: "DNS server"}
 	server.add("server", Info, "Asked", res.server+" ("+res.source+")", "")
 	r.add(server)
@@ -97,7 +97,34 @@ func DNS(ctx context.Context, input string, opts DNSOptions) (*Report, error) {
 			}
 		}
 	}
-	chain := cnameChain(name, cnames)
+	chain, loop := cnameChain(name, cnames)
+	// A resolver answers a CNAME question with the first alias only, so
+	// follow the chain to a name that has data, does not exist or repeats.
+	seen := answers
+	for len(chain) > 0 && !loop && !nxdomain && len(chain) < maxAliases {
+		last := chain[len(chain)-1].Target
+		if hasData(seen, last) {
+			break
+		}
+		in, err := res.query(ctx, trimDot(last), dns.TypeA)
+		if err != nil {
+			break
+		}
+		seen = append(seen[:len(seen):len(seen)], in)
+		if in.Rcode == dns.RcodeNameError {
+			nxdomain = true
+			break
+		}
+		before := len(chain)
+		for _, rr := range in.Answer {
+			if c, ok := rr.(*dns.CNAME); ok {
+				cnames = append(cnames, c)
+			}
+		}
+		if chain, loop = cnameChain(name, cnames); len(chain) == before {
+			break
+		}
+	}
 	for _, c := range chain {
 		d.CNAMEChain = append(d.CNAMEChain, Record{Name: trimDot(c.Hdr.Name), Type: "CNAME", TTL: c.Hdr.Ttl, Value: trimDot(c.Target)})
 	}
@@ -112,15 +139,20 @@ func DNS(ctx context.Context, input string, opts DNSOptions) (*Report, error) {
 	}
 	r.add(alias)
 
-	if nxdomain {
-		s := Section{Title: "Result"}
-		if len(chain) > 0 {
-			last := d.CNAMEChain[len(d.CNAMEChain)-1].Value
-			s.add("nxdomain", Fail, "Dangling alias", last+" does not exist", "The alias points to a name that is gone. Fix or delete the CNAME: if someone can register the target, they can take over this name.")
-		} else {
-			s.add("nxdomain", Fail, "Not found", name+" does not exist (NXDOMAIN)", "No DNS records exist for this name. Check the spelling, or that the zone is set up.")
-		}
-		r.add(s)
+	result := Section{Title: "Result"}
+	switch {
+	case loop:
+		result.add("cname.loop", Fail, "Alias loop", "the aliases lead back to "+d.CNAMEChain[len(d.CNAMEChain)-1].Value, "The name never resolves. Point one of the CNAMEs at a real name.")
+	case len(chain) >= maxAliases:
+		result.add("cname.long", Fail, "Alias chain", fmt.Sprintf("%d or more aliases", maxAliases), "Resolvers give up on chains this long. Point the name closer to its target.")
+	case nxdomain && len(chain) > 0:
+		last := d.CNAMEChain[len(d.CNAMEChain)-1].Value
+		result.add("nxdomain", Fail, "Dangling alias", last+" does not exist", "The alias points to a name that is gone. Fix or delete the CNAME: if someone can register the target, they can take over this name.")
+	case nxdomain:
+		result.add("nxdomain", Fail, "Not found", name+" does not exist (NXDOMAIN)", "No DNS records exist for this name. Check the spelling, or that the zone is set up.")
+	}
+	if len(result.Findings) > 0 {
+		r.add(result)
 		return r.finish(), nil
 	}
 
@@ -190,12 +222,15 @@ func parseTypes(values []string) ([]string, error) {
 	return types, nil
 }
 
-// cnameChain follows the aliases from name, stopping at a loop.
-func cnameChain(name string, cnames []*dns.CNAME) []*dns.CNAME {
-	var chain []*dns.CNAME
-	current := dns.Fqdn(name)
-	seen := map[string]bool{}
-	for len(chain) < 16 {
+// maxAliases is the longest CNAME chain the check follows.
+const maxAliases = 16
+
+// cnameChain follows the aliases from name. loop is true when an alias
+// points back to a name already in the chain.
+func cnameChain(name string, cnames []*dns.CNAME) (chain []*dns.CNAME, loop bool) {
+	current := strings.ToLower(dns.Fqdn(name))
+	seen := map[string]bool{current: true}
+	for len(chain) < maxAliases {
 		var next *dns.CNAME
 		for _, c := range cnames {
 			if strings.EqualFold(c.Hdr.Name, current) {
@@ -203,14 +238,33 @@ func cnameChain(name string, cnames []*dns.CNAME) []*dns.CNAME {
 				break
 			}
 		}
-		if next == nil || seen[strings.ToLower(current)] {
-			break
+		if next == nil {
+			return chain, false
 		}
-		seen[strings.ToLower(current)] = true
 		chain = append(chain, next)
-		current = next.Target
+		current = strings.ToLower(dns.Fqdn(next.Target))
+		if seen[current] {
+			return chain, true
+		}
+		seen[current] = true
 	}
-	return chain
+	return chain, false
+}
+
+// hasData is true when an answer holds a record other than a CNAME for
+// name, which proves the end of the chain exists.
+func hasData(answers []*dns.Msg, name string) bool {
+	for _, in := range answers {
+		if in == nil {
+			continue
+		}
+		for _, rr := range in.Answer {
+			if rr.Header().Rrtype != dns.TypeCNAME && strings.EqualFold(rr.Header().Name, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func rdata(rr dns.RR) string {

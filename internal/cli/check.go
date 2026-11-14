@@ -143,7 +143,11 @@ const statusWidth = 9 // "missing" and two spaces
 func (a *App) printReport(r *check.Report) {
 	width := max(a.width(), 40)
 	out := a.Stdout
-	fmt.Fprintln(out, a.bold(checkTitles[r.Check]+" for "+text.Line(r.Target, 200)))
+	title := checkTitles[r.Check] + " for " + text.Line(r.Target, 200)
+	if r.Unicode != "" {
+		title += " (" + text.Line(r.Unicode, 200) + ")"
+	}
+	fmt.Fprintln(out, a.bold(title))
 	for _, s := range r.Sections {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, a.bold(text.Line(s.Title, 80)))
